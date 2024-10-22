@@ -108,6 +108,7 @@ public:
 		delete[] second;
 	}
 
+	#pragma omp declare simd
 	double stochastic_compute(long i)
 	{
 		double p1 = (double)second[i / AA_NUMBER] / (total + complement);
