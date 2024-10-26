@@ -102,7 +102,6 @@ public:
 
         InitVectors();
 
-
         char ch;
         while ((ch = fgetc(bacteria_file)) != EOF)
         {
@@ -269,46 +268,56 @@ double CompareBacteria(Bacteria* b1, Bacteria* b2)
     return (vector_len1 > 0 && vector_len2 > 0) ? correlation / (sqrt(vector_len1) * sqrt(vector_len2)) : 0;
 }
 
-#include <queue>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
+// Shared data structures
+std::vector<Bacteria*> bacteria_list;
+std::mutex bacteria_list_mutex;
 
 std::queue<std::pair<int,int>> task_queue;
-std::mutex queue_mutex;
-std::condition_variable queue_cv;
-bool done = false;
+std::mutex task_queue_mutex;
+std::condition_variable task_queue_cv;
 
-void producer(int number_bacteria)
+bool loading_done = false;
+
+void producer(int start, int end)
 {
-    for(int i=0; i<number_bacteria-1; i++)
+    for(int i = start; i < end; i++)
     {
-        for(int j=i+1; j<number_bacteria; j++)
+        printf("Loading bacteria %d of %d\n", i+1, number_bacteria);
+        Bacteria* b = new Bacteria(bacteria_name[i]);
+
+        // Lock the bacteria list mutex to update the list
         {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            task_queue.push(std::make_pair(i,j));
-            queue_cv.notify_one();
+            std::lock_guard<std::mutex> lock(bacteria_list_mutex);
+            bacteria_list[i] = b;
+
+            // Generate comparison tasks with previously loaded bacteria
+            for(int j = 0; j < i; j++)
+            {
+                if (bacteria_list[j] != nullptr)
+                {
+                    // Lock task queue mutex to add the task
+                    {
+                        std::lock_guard<std::mutex> task_lock(task_queue_mutex);
+                        task_queue.push(std::make_pair(j, i));
+                        task_queue_cv.notify_one();
+                    }
+                }
+            }
         }
-    }
-    // Notify consumers that we are done
-    {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-        done = true;
-        queue_cv.notify_all();
     }
 }
 
-void consumer(Bacteria** b)
+void consumer()
 {
     while(true)
     {
         std::pair<int,int> task;
         {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            queue_cv.wait(lock, []{ return !task_queue.empty() || done; });
+            std::unique_lock<std::mutex> lock(task_queue_mutex);
+            task_queue_cv.wait(lock, []{ return !task_queue.empty() || loading_done; });
             if(task_queue.empty())
             {
-                if(done)
+                if(loading_done)
                     break;
                 else
                     continue;
@@ -316,64 +325,79 @@ void consumer(Bacteria** b)
             task = task_queue.front();
             task_queue.pop();
         }
-        // Perform the comparison
+
         int i = task.first;
         int j = task.second;
-        printf("%2d %2d -> ", i, j);
-        double correlation = CompareBacteria(b[i], b[j]);
-        printf("%.20lf\n", correlation);
+
+        Bacteria* bi = nullptr;
+        Bacteria* bj = nullptr;
+
+        {
+            // No need to lock bacteria_list_mutex here since the list is only appended to
+            bi = bacteria_list[i];
+            bj = bacteria_list[j];
+        }
+
+        if (bi != nullptr && bj != nullptr)
+        {
+            printf("Comparing bacteria %d and %d\n", i, j);
+            double correlation = CompareBacteria(bi, bj);
+            printf("Result between %d and %d: %.20lf\n", i, j, correlation);
+        }
+        else
+        {
+            fprintf(stderr, "Error: Bacteria %d or %d not loaded yet\n", i, j);
+        }
     }
 }
 
 void CompareAllBacteria()
 {
-    Bacteria** b = new Bacteria*[number_bacteria];
-    int num_load_threads = std::thread::hardware_concurrency();
-    if(num_load_threads == 0) num_load_threads = 2; // Default to 2 if unable to detect
+    int num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 2; // Default to 2 if unable to detect
 
-    // Load bacteria files in parallel
-    std::vector<std::thread> load_threads;
-    int files_per_thread = (number_bacteria + num_load_threads - 1) / num_load_threads;
+    // Initialize bacteria_list with size number_bacteria
+    bacteria_list.resize(number_bacteria, nullptr);
 
-    for(int t = 0; t < num_load_threads; t++)
+    // Start producer threads
+    std::vector<std::thread> producer_threads;
+
+    int bacteria_per_thread = (number_bacteria + num_threads - 1) / num_threads;
+
+    for (int t = 0; t < num_threads; t++)
     {
-        int start = t * files_per_thread;
-        int end = std::min(start + files_per_thread, number_bacteria);
-        load_threads.emplace_back([start, end, b]()
-        {
-            for(int i = start; i < end; i++)
-            {
-                printf("load %d of %d\n", i+1, number_bacteria);
-                b[i] = new Bacteria(bacteria_name[i]);
-            }
-        });
+        int start = t * bacteria_per_thread;
+        int end = std::min(start + bacteria_per_thread, number_bacteria);
+        producer_threads.emplace_back(producer, start, end);
     }
 
-    for(auto& t : load_threads)
-        t.join();
-
-    // Start producer and consumer threads
-    std::thread producer_thread(producer, number_bacteria);
-
-    int num_consumer_threads = std::thread::hardware_concurrency();
-    if(num_consumer_threads == 0) num_consumer_threads = 2; // Default to 2 if unable to detect
+    // Start consumer threads
     std::vector<std::thread> consumer_threads;
-
-    for(int t = 0; t < num_consumer_threads; t++)
+    for (int t = 0; t < num_threads; t++)
     {
-        consumer_threads.emplace_back(consumer, b);
+        consumer_threads.emplace_back(consumer);
     }
 
-    producer_thread.join();
-
-    for(auto& t : consumer_threads)
+    // Wait for producers to finish
+    for (auto& t : producer_threads)
         t.join();
 
-    for(int i=0; i<number_bacteria; i++)
+    // Set loading_done to true and notify consumers
     {
-        delete b[i];
+        std::lock_guard<std::mutex> lock(task_queue_mutex);
+        loading_done = true;
     }
-    delete[] b;
+    task_queue_cv.notify_all();
+
+    // Wait for consumers to finish
+    for (auto& t : consumer_threads)
+        t.join();
+
+    // Clean up
+    for (int i = 0; i < number_bacteria; i++)
+    {
+        delete bacteria_list[i];
+    }
 }
 
 int main(int argc,char * argv[])
