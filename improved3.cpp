@@ -27,7 +27,7 @@ short code[27] = { 0, 2, 1, 2, 3, 4, 5, 6, 7, -1, 8, 9, 10, 11, -1, 12, 13, 14, 
 #define	EPSILON			1e-010
 
 
-int NUM_CORES = 8; // Number of cores to use (user can change this value)
+int NUM_CORES = 16;
 
 
 void Init()
@@ -116,7 +116,6 @@ public:
 
         char* buffer = new char[file_size + 1];
 
-        // Read file into buffer
         size_t read_size = fread(buffer, 1, file_size, bacteria_file);
         buffer[read_size] = '\0';
 
@@ -171,7 +170,7 @@ public:
         double* t = new double[M];
 
         omp_set_num_threads(NUM_CORES);
-        #pragma omp parallel for reduction(+:count)
+        #pragma omp parallel for schedule(dynamic) reduction(+:count)
         for (long i = 0; i < M; i++) {
             int i_mod_aa_number = i % AA_NUMBER;
             int i_div_aa_number = (i / AA_NUMBER) % M1;
@@ -250,6 +249,7 @@ void ReadInputFile(const char* input_name)
     }
     fclose(input_file);
 }
+
 
 double CompareBacteria(Bacteria* b1, Bacteria* b2)
 {
@@ -418,20 +418,16 @@ void CompareAllBacteria() {
         });
     }
 
-    // Wait for producers to finish
     for (auto& t : producers) {
         t.join();
     }
 
-    // Signal that no more tasks will be added
     task_queue.set_done();
 
-    // Wait for consumers to finish
     for (auto& t : consumers) {
         t.join();
     }
 
-    // Cleanup
     for (auto& bi : b) {
         delete bi;
     }

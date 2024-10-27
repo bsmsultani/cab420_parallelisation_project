@@ -10,7 +10,9 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
-#include <cmath> // For sqrt
+#include <cmath>
+
+#define NUM_CORS 8
 
 int number_bacteria;
 char** bacteria_name;
@@ -161,7 +163,7 @@ public:
         count = 0;
         double* t = new double[M];
 
-        #pragma omp parallel for reduction(+:count)
+        #pragma omp parallel for reduction(+:count) num_threads(NUM_CORS)
         for (long i = 0; i < M; i++) {
             int i_mod_aa_number = i % AA_NUMBER;
             int i_div_aa_number = (i / AA_NUMBER) % M1;
@@ -291,7 +293,7 @@ double CompareBacteria(Bacteria* b1, Bacteria* b2)
 void CompareAllBacteria()
 {
     Bacteria** b = new Bacteria*[number_bacteria];
-    #pragma omp parallel for
+    #pragma omp parallel for num_threads(NUM_CORS)
     for (int i = 0; i < number_bacteria; i++)
     {
         printf("Loading bacteria %d of %d\n", i + 1, number_bacteria);
@@ -300,10 +302,10 @@ void CompareAllBacteria()
 
     std::vector<std::string> results;
 
-    #pragma omp parallel for
+    #pragma omp parallel for num_threads(NUM_CORS)
     for (int i = 0; i < number_bacteria - 1; i++)
     {
-        #pragma omp parallel for
+        #pragma omp parallel for num_threads(NUM_CORS)
         for (int j = i + 1; j < number_bacteria; j++)
         {
             double correlation = CompareBacteria(b[i], b[j]);

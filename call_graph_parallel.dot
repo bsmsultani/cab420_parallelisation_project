@@ -1,0 +1,12 @@
+digraph {
+	graph [fontname=Arial, nodesep=0.125, ranksep=0.25];
+	node [fontcolor=white, fontname=Arial, height=0, shape=box, style=filled, width=0];
+	edge [fontname=Arial];
+	1 [color="#e4a504", fontcolor="#ffffff", fontsize="10.00", label="_init\n82.08%\n(82.08%)\n1942569×"];
+	1 -> 1 [arrowsize="0.91", color="#e4a504", fontcolor="#e4a504", fontsize="10.00", label="1942569×", labeldistance="3.28", penwidth="3.28"];
+	2 [color="#0d4181", fontcolor="#ffffff", fontsize="10.00", label="register_tm_clones\n11.32%\n(11.32%)"];
+	3 [color="#0d1876", fontcolor="#ffffff", fontsize="10.00", label="deregister_tm_clones\n2.61%\n(2.61%)"];
+	4 [color="#0d1475", fontcolor="#ffffff", fontsize="10.00", label="frame_dummy\n1.70%\n(1.70%)"];
+	5 [color="#0d1274", fontcolor="#ffffff", fontsize="10.00", label="__do_global_dtors_aux\n1.24%\n(1.24%)"];
+	6 [color="#0d1174", fontcolor="#ffffff", fontsize="10.00", label="__gthread_active_p()\n1.05%\n(1.05%)"];
+}
