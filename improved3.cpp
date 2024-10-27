@@ -10,7 +10,12 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
-#include <cmath> // For sqrt
+#include <cmath>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <atomic>
 
 int number_bacteria;
 char** bacteria_name;
@@ -21,13 +26,17 @@ short code[27] = { 0, 2, 1, 2, 3, 4, 5, 6, 7, -1, 8, 9, 10, 11, -1, 12, 13, 14, 
 #define AA_NUMBER		20
 #define	EPSILON			1e-010
 
+
+int NUM_CORES = 8; // Number of cores to use (user can change this value)
+
+
 void Init()
 {
     M2 = 1;
-    for (int i=0; i<LEN-2; i++)	// M2 = AA_NUMBER ^ (LEN-2);
-        M2 *= AA_NUMBER; 
-    M1 = M2 * AA_NUMBER;		// M1 = AA_NUMBER ^ (LEN-1);
-    M  = M1 * AA_NUMBER;		// M  = AA_NUMBER ^ (LEN);
+    for (int i=0; i<LEN-2; i++)
+        M2 *= AA_NUMBER;
+    M1 = M2 * AA_NUMBER;
+    M  = M1 * AA_NUMBER;
 }
 
 class Bacteria
@@ -153,7 +162,7 @@ public:
         double one_l_div_total[AA_NUMBER];
         for (int i=0; i<AA_NUMBER; i++)
             one_l_div_total[i] = (total_l > 0) ? (double)one_l[i] / total_l : 0;
-        
+
         double* second_div_total = new double[M1];
         for (int i=0; i<M1; i++)
             second_div_total[i] = (total_plus_complement > 0) ? (double)second[i] / total_plus_complement : 0;
@@ -161,6 +170,7 @@ public:
         count = 0;
         double* t = new double[M];
 
+        omp_set_num_threads(NUM_CORES);
         #pragma omp parallel for reduction(+:count)
         for (long i = 0; i < M; i++) {
             int i_mod_aa_number = i % AA_NUMBER;
@@ -172,7 +182,7 @@ public:
             double p2 = one_l_div_total[i_mod_aa_number];
             double p3 = second_div_total[i_mod_M1];
             double p4 = one_l_div_total[i_div_M1];
-            
+
             double stochastic = (p1 * p2 + p3 * p4) * total_div_2;
 
             if (stochastic > EPSILON) {
@@ -288,43 +298,142 @@ double CompareBacteria(Bacteria* b1, Bacteria* b2)
     return (vector_len1 > 0 && vector_len2 > 0) ? correlation / (sqrt(vector_len1) * sqrt(vector_len2)) : 0;
 }
 
-void CompareAllBacteria()
-{
-    Bacteria** b = new Bacteria*[number_bacteria];
-    #pragma omp parallel for
-    for (int i = 0; i < number_bacteria; i++)
-    {
-        printf("Loading bacteria %d of %d\n", i + 1, number_bacteria);
-        b[i] = new Bacteria(bacteria_name[i]);
+class TaskQueue {
+private:
+    std::queue<std::pair<int, int>> tasks;
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool done = false;
+
+public:
+    void push_task(const std::pair<int, int>& task) {
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            tasks.push(task);
+        }
+        cv.notify_one();
     }
 
-    std::vector<std::string> results;
-
-    #pragma omp parallel for
-    for (int i = 0; i < number_bacteria - 1; i++)
-    {
-        #pragma omp parallel for
-        for (int j = i + 1; j < number_bacteria; j++)
-        {
-            double correlation = CompareBacteria(b[i], b[j]);
-
-            std::ostringstream result;
-            result << std::setw(2) << i << " " << std::setw(2) << j << " -> ";
-            result << std::fixed << std::setprecision(20) << correlation;
-
-            results.push_back(result.str());
+    bool pop_task(std::pair<int, int>& task) {
+        std::unique_lock<std::mutex> lock(mtx);
+        while (tasks.empty() && !done) {
+            cv.wait(lock);
+        }
+        if (!tasks.empty()) {
+            task = tasks.front();
+            tasks.pop();
+            return true;
+        } else {
+            return false;
         }
     }
 
-    for (int i = 0; i < number_bacteria; i++)
-    {
-        delete b[i];
+    void set_done() {
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            done = true;
+        }
+        cv.notify_all();
     }
-    delete[] b;
+};
 
-    for (const auto& result : results)
-    {
-        std::cout << result << std::endl;
+void CompareAllBacteria() {
+    // Shared resources
+    std::vector<Bacteria*> b;
+    std::vector<int> b_indices; // Map from indices in b to original idx
+    std::mutex b_mutex;
+    TaskQueue task_queue;
+    std::mutex output_mutex;
+
+    // Number of threads
+    int num_producers = NUM_CORES;
+    int num_consumers = NUM_CORES;
+
+    // Start consumer threads
+    std::vector<std::thread> consumers;
+    for (int i = 0; i < num_consumers; i++) {
+        consumers.emplace_back([&task_queue, &b, &b_indices, &output_mutex, &b_mutex]() {
+            std::pair<int, int> task;
+            while (task_queue.pop_task(task)) {
+                int i = task.first;
+                int j = task.second;
+
+                Bacteria* bi;
+                Bacteria* bj;
+                int idx_i, idx_j;
+
+                // Lock b_mutex to safely access b and b_indices
+                {
+                    std::lock_guard<std::mutex> lock(b_mutex);
+                    bi = b[i];
+                    bj = b[j];
+                    idx_i = b_indices[i];
+                    idx_j = b_indices[j];
+                }
+
+                double correlation = CompareBacteria(bi, bj);
+
+                // Store or print the result
+                {
+                    std::lock_guard<std::mutex> lock(output_mutex);
+                    std::cout << std::setw(2) << idx_i << " " << std::setw(2) << idx_j << " -> "
+                              << std::fixed << std::setprecision(20) << correlation << std::endl;
+                }
+            }
+        });
+    }
+
+    // Start producer threads
+    std::vector<std::thread> producers;
+    std::atomic<int> next_bacteria_index(0);
+
+    for (int i = 0; i < num_producers; i++) {
+        producers.emplace_back([&]() {
+            int idx;
+            while ((idx = next_bacteria_index.fetch_add(1)) < number_bacteria) {
+                Bacteria* bi = new Bacteria(bacteria_name[idx]);
+
+                std::vector<std::pair<int, int>> new_tasks;
+
+                int b_index;
+                int existing_size;
+
+                // Lock b to add bi and generate tasks
+                {
+                    std::lock_guard<std::mutex> lock(b_mutex);
+                    b_index = b.size();
+                    b.push_back(bi);
+                    b_indices.push_back(idx); // Map b_index to idx
+                    existing_size = b.size();
+                }
+
+                // Generate comparison tasks with all existing bacteria except itself
+                for (int j = 0; j < existing_size; j++) {
+                    if (j != b_index) {
+                        // Push the task immediately
+                        task_queue.push_task(std::make_pair(b_index, j));
+                    }
+                }
+            }
+        });
+    }
+
+    // Wait for producers to finish
+    for (auto& t : producers) {
+        t.join();
+    }
+
+    // Signal that no more tasks will be added
+    task_queue.set_done();
+
+    // Wait for consumers to finish
+    for (auto& t : consumers) {
+        t.join();
+    }
+
+    // Cleanup
+    for (auto& bi : b) {
+        delete bi;
     }
 }
 

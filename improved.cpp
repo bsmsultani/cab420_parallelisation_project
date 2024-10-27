@@ -6,6 +6,11 @@
 #include <chrono>
 #include <iostream>
 #include <omp.h>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <iomanip>
+
 
 int number_bacteria;
 char** bacteria_name;
@@ -99,7 +104,6 @@ public:
 
         InitVectors();
 
-
         char ch;
         while ((ch = fgetc(bacteria_file)) != EOF)
         {
@@ -136,7 +140,6 @@ public:
 
         #pragma omp parallel for reduction(+:count)
         for (long i = 0; i < M; i++) {
-            // Calculate indices directly from 'i'
             int i_mod_aa_number = i % AA_NUMBER;
             int i_div_aa_number = (i / AA_NUMBER) % M1;
             int i_mod_M1 = i % M1;
@@ -157,10 +160,6 @@ public:
             }
         }
 
-
-
-
-        
         delete[] second_div_total;
         delete[] vector;
         delete[] second;
@@ -267,38 +266,52 @@ double CompareBacteria(Bacteria* b1, Bacteria* b2)
         vector_len2 += (t2 * t2);
     }
 
-
     return (vector_len1 > 0 && vector_len2 > 0) ? correlation / (sqrt(vector_len1) * sqrt(vector_len2)) : 0;
 }
 
 void CompareAllBacteria()
 {
     Bacteria** b = new Bacteria*[number_bacteria];
-    // use only 2 threads for reading files
-    for(int i=0; i<number_bacteria; i++)
+    #pragma omp parallel for
+    for (int i = 0; i < number_bacteria; i++)
     {
-        printf("load %d of %d\n", i+1, number_bacteria);
+        printf("Loading bacteria %d of %d\n", i + 1, number_bacteria);
         b[i] = new Bacteria(bacteria_name[i]);
     }
 
-    #pragma omp parallel for
-    for(int i=0; i<number_bacteria-1; i++)
-        #pragma omp parallel for
-        for(int j=i+1; j<number_bacteria; j++)
-        {
-            printf("%2d %2d -> ", i, j);
-            double correlation = CompareBacteria(b[i], b[j]);
-            printf("%.20lf\n", correlation);
-        }
+    std::vector<std::string> results;
 
-    for(int i=0; i<number_bacteria; i++)
+    #pragma omp parallel for
+    for (int i = 0; i < number_bacteria - 1; i++)
+    {
+        #pragma omp parallel for
+        for (int j = i + 1; j < number_bacteria; j++)
+        {
+            double correlation = CompareBacteria(b[i], b[j]);
+
+            std::ostringstream result;
+            result << std::setw(2) << i << " " << std::setw(2) << j << " -> ";
+            result << std::fixed << std::setprecision(20) << correlation;
+
+            #pragma omp critical
+            results.push_back(result.str());
+        }
+    }
+
+    for (int i = 0; i < number_bacteria; i++)
     {
         delete b[i];
     }
     delete[] b;
+
+    for (const auto& result : results)
+    {
+        std::cout << result << std::endl;
+    }
 }
 
-int main(int argc,char * argv[])
+
+int main(int argc, char* argv[])
 {
     time_t t1 = time(NULL);
 
@@ -307,9 +320,9 @@ int main(int argc,char * argv[])
     CompareAllBacteria();
 
     time_t t2 = time(NULL);
-    printf("time elapsed: %ld seconds\n", (long)(t2 - t1)); 
+    printf("Time elapsed: %ld seconds\n", (long)(t2 - t1));
 
-    for(int i=0; i<number_bacteria; i++)
+    for (int i = 0; i < number_bacteria; i++)
     {
         delete[] bacteria_name[i];
     }
